@@ -9,9 +9,15 @@ from src.bot.handlers import (
     start_command,
     help_command,
     positions_command,
+    watchlist_command,
+    add_wallet_command,
+    remove_wallet_command,
+    setfilter_command,
     handle_message,
     error_handler
 )
+from src.bot.monitor import PositionMonitor
+from src.utils.database import Database
 
 # Налаштування логування
 logging.basicConfig(
@@ -39,6 +45,12 @@ def create_bot(token: str) -> Application:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("positions", positions_command))
 
+    # Команди watchlist
+    application.add_handler(CommandHandler("watchlist", watchlist_command))
+    application.add_handler(CommandHandler("add", add_wallet_command))
+    application.add_handler(CommandHandler("remove", remove_wallet_command))
+    application.add_handler(CommandHandler("setfilter", setfilter_command))
+
     # Обробник текстових повідомлень
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
@@ -61,7 +73,26 @@ def run_bot(token: str):
 
     application = create_bot(token)
 
+    # Створюємо базу даних та монітор
+    db = Database()
+    monitor = PositionMonitor(application, db, check_interval=10)
+
+    # Callback для запуску монітора після ініціалізації
+    async def post_init(app: Application) -> None:
+        await monitor.start()
+        logger.info("Position monitor started")
+
+    # Callback для зупинки монітора
+    async def post_stop(app: Application) -> None:
+        await monitor.stop()
+        logger.info("Position monitor stopped")
+
+    # Додаємо callbacks
+    application.post_init = post_init
+    application.post_stop = post_stop
+
     logger.info("Bot is running! Press Ctrl+C to stop.")
+    logger.info("Monitoring enabled - checking for new positions every 10 seconds")
 
     # Запускаємо бота (блокуючий виклик)
     application.run_polling(
