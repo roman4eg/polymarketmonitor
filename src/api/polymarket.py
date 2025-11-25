@@ -142,7 +142,7 @@ def format_position(position: Dict, market_info: Optional[Dict] = None) -> str:
         # Середня ціна входу
         avg_price = position.get('avg_price', 'N/A')
 
-        result = f"📊 **Позиція #{asset_id[:8]}...**\n"
+        result = f"📊 <b>Позиція #{asset_id[:8]}...</b>\n"
         result += f"├ Результат: {outcome}\n"
         result += f"├ Розмір: {size:.2f}\n"
         result += f"├ Середня ціна: {avg_price}\n"
