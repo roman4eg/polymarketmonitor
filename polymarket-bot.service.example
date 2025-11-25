@@ -1,0 +1,17 @@
+[Unit]
+Description=Polymarket Monitor Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/polymarketmonitor
+Environment="PATH=/home/YOUR_USERNAME/polymarketmonitor/venv/bin"
+ExecStart=/home/YOUR_USERNAME/polymarketmonitor/venv/bin/python3 main.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/YOUR_USERNAME/polymarketmonitor/logs/bot.log
+StandardError=append:/home/YOUR_USERNAME/polymarketmonitor/logs/error.log
+
+[Install]
+WantedBy=multi-user.target
