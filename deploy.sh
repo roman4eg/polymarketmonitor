@@ -38,6 +38,14 @@ echo "Крок 1/6: Перевірка Python..."
 if command -v python3 &> /dev/null; then
     PYTHON_VERSION=$(python3 --version | cut -d " " -f 2)
     print_status "Python $PYTHON_VERSION встановлено"
+
+    # Перевірка python3-venv
+    if ! python3 -m venv --help &> /dev/null; then
+        print_warning "python3-venv не встановлено"
+        echo "Встановлюємо python3-venv..."
+        sudo apt install -y python3-venv
+        print_status "python3-venv встановлено"
+    fi
 else
     print_error "Python 3 не знайдено"
     echo "Встановіть: sudo apt install python3 python3-pip python3-venv"
@@ -57,9 +65,19 @@ fi
 
 # Крок 3: Створення віртуального середовища
 echo "Крок 3/6: Налаштування віртуального середовища..."
-if [ ! -d "venv" ]; then
+if [ ! -f "venv/bin/activate" ]; then
+    # Видаляємо стару директорію якщо вона існує але пошкоджена
+    if [ -d "venv" ]; then
+        rm -rf venv
+    fi
     python3 -m venv venv
-    print_status "Віртуальне середовище створено"
+    if [ -f "venv/bin/activate" ]; then
+        print_status "Віртуальне середовище створено"
+    else
+        print_error "Не вдалося створити віртуальне середовище"
+        echo "Встановіть python3-venv: sudo apt install python3-venv"
+        exit 1
+    fi
 else
     print_status "Віртуальне середовище вже існує"
 fi
