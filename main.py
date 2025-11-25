@@ -1,7 +1,6 @@
 """
 Точка входу для запуску бота
 """
-import asyncio
 import os
 import sys
 from dotenv import load_dotenv
@@ -25,7 +24,7 @@ def main():
 
     # Запускаємо бота
     try:
-        asyncio.run(run_bot(bot_token))
+        run_bot(bot_token)
     except KeyboardInterrupt:
         print("\n👋 Бот зупинено користувачем")
     except Exception as e:

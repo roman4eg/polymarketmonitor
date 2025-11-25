@@ -50,7 +50,7 @@ def create_bot(token: str) -> Application:
     return application
 
 
-async def run_bot(token: str):
+def run_bot(token: str):
     """
     Запустити бота
 
@@ -61,16 +61,10 @@ async def run_bot(token: str):
 
     application = create_bot(token)
 
-    # Запускаємо бота
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(
-        allowed_updates=["message", "callback_query"]
-    )
-
     logger.info("Bot is running! Press Ctrl+C to stop.")
 
-    # Чекаємо поки бот не зупиниться
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
+    # Запускаємо бота (блокуючий виклик)
+    application.run_polling(
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=True
+    )
