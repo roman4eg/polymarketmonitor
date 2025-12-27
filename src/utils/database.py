@@ -55,29 +55,49 @@ class Database:
                 )
             """)
 
-            # Таблиця watchlist
+            # Таблиця watchlist з іменами гаманців
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     wallet_address TEXT NOT NULL,
+                    wallet_name TEXT,
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     UNIQUE(user_id, wallet_address)
                 )
             """)
 
-            # Таблиця відстежуваних позицій (для виявлення нових)
+            # Перевірка чи існує колонка wallet_name (для міграції старих БД)
+            cursor.execute("PRAGMA table_info(watchlist)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'wallet_name' not in columns:
+                cursor.execute("ALTER TABLE watchlist ADD COLUMN wallet_name TEXT")
+                logger.info("Added wallet_name column to watchlist table")
+
+            # Таблиця відстежуваних позицій з розміром для виявлення змін
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tracked_positions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     wallet_address TEXT NOT NULL,
                     asset_id TEXT NOT NULL,
                     condition_id TEXT,
+                    size REAL DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(wallet_address, asset_id)
                 )
             """)
+
+            # Перевірка чи існують колонки size та last_updated
+            cursor.execute("PRAGMA table_info(tracked_positions)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'size' not in columns:
+                cursor.execute("ALTER TABLE tracked_positions ADD COLUMN size REAL DEFAULT 0")
+                logger.info("Added size column to tracked_positions table")
+            if 'last_updated' not in columns:
+                cursor.execute("ALTER TABLE tracked_positions ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                logger.info("Added last_updated column to tracked_positions table")
 
             logger.info("Database initialized successfully")
 
@@ -103,13 +123,14 @@ class Database:
             logger.error(f"Error adding user: {e}")
             return False
 
-    def add_wallet_to_watchlist(self, chat_id: int, wallet_address: str) -> bool:
+    def add_wallet_to_watchlist(self, chat_id: int, wallet_address: str, wallet_name: Optional[str] = None) -> bool:
         """
         Додати гаманець до watchlist
 
         Args:
             chat_id: ID чату користувача
             wallet_address: Адреса гаманця
+            wallet_name: Назва гаманця (опціонально)
 
         Returns:
             True якщо гаманець доданий успішно
@@ -121,8 +142,8 @@ class Database:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT OR IGNORE INTO watchlist (user_id, wallet_address) VALUES (?, ?)",
-                    (chat_id, wallet_address.lower())
+                    "INSERT OR IGNORE INTO watchlist (user_id, wallet_address, wallet_name) VALUES (?, ?, ?)",
+                    (chat_id, wallet_address.lower(), wallet_name)
                 )
                 return cursor.rowcount > 0
         except Exception as e:
@@ -271,7 +292,7 @@ class Database:
             logger.error(f"Error checking tracked position: {e}")
             return False
 
-    def add_tracked_position(self, wallet_address: str, asset_id: str, condition_id: Optional[str] = None) -> bool:
+    def add_tracked_position(self, wallet_address: str, asset_id: str, condition_id: Optional[str] = None, size: float = 0) -> bool:
         """
         Додати позицію до відстежуваних
 
@@ -279,6 +300,7 @@ class Database:
             wallet_address: Адреса гаманця
             asset_id: ID активу
             condition_id: ID умови (опціонально)
+            size: Розмір позиції
 
         Returns:
             True якщо позиція додана успішно
@@ -287,10 +309,104 @@ class Database:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT OR IGNORE INTO tracked_positions (wallet_address, asset_id, condition_id) VALUES (?, ?, ?)",
-                    (wallet_address.lower(), asset_id, condition_id)
+                    "INSERT OR IGNORE INTO tracked_positions (wallet_address, asset_id, condition_id, size, last_updated) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    (wallet_address.lower(), asset_id, condition_id, size)
                 )
                 return cursor.rowcount > 0
         except Exception as e:
             logger.error(f"Error adding tracked position: {e}")
+            return False
+
+    def get_wallet_name(self, chat_id: int, wallet_address: str) -> Optional[str]:
+        """
+        Отримати ім'я гаманця
+
+        Args:
+            chat_id: ID чату користувача
+            wallet_address: Адреса гаманця
+
+        Returns:
+            Ім'я гаманця або None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT wallet_name FROM watchlist WHERE user_id = ? AND wallet_address = ?",
+                    (chat_id, wallet_address.lower())
+                )
+                row = cursor.fetchone()
+                return row["wallet_name"] if row else None
+        except Exception as e:
+            logger.error(f"Error getting wallet name: {e}")
+            return None
+
+    def get_watchlist_with_names(self, chat_id: int) -> List[Dict[str, str]]:
+        """
+        Отримати watchlist з іменами
+
+        Args:
+            chat_id: ID чату користувача
+
+        Returns:
+            Список словників з адресами та іменами
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT wallet_address, wallet_name FROM watchlist WHERE user_id = ? ORDER BY added_at DESC",
+                    (chat_id,)
+                )
+                return [{"address": row["wallet_address"], "name": row["wallet_name"]} for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting watchlist with names: {e}")
+            return []
+
+    def get_position_size(self, wallet_address: str, asset_id: str) -> Optional[float]:
+        """
+        Отримати розмір позиції
+
+        Args:
+            wallet_address: Адреса гаманця
+            asset_id: ID активу
+
+        Returns:
+            Розмір позиції або None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT size FROM tracked_positions WHERE wallet_address = ? AND asset_id = ?",
+                    (wallet_address.lower(), asset_id)
+                )
+                row = cursor.fetchone()
+                return row["size"] if row else None
+        except Exception as e:
+            logger.error(f"Error getting position size: {e}")
+            return None
+
+    def update_position_size(self, wallet_address: str, asset_id: str, new_size: float) -> bool:
+        """
+        Оновити розмір позиції
+
+        Args:
+            wallet_address: Адреса гаманця
+            asset_id: ID активу
+            new_size: Новий розмір позиції
+
+        Returns:
+            True якщо оновлено успішно
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE tracked_positions SET size = ?, last_updated = CURRENT_TIMESTAMP WHERE wallet_address = ? AND asset_id = ?",
+                    (new_size, wallet_address.lower(), asset_id)
+                )
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating position size: {e}")
             return False
