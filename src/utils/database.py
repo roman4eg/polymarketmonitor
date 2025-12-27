@@ -96,7 +96,10 @@ class Database:
                 cursor.execute("ALTER TABLE tracked_positions ADD COLUMN size REAL DEFAULT 0")
                 logger.info("Added size column to tracked_positions table")
             if 'last_updated' not in columns:
-                cursor.execute("ALTER TABLE tracked_positions ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                # SQLite не підтримує CURRENT_TIMESTAMP в ALTER TABLE, використовуємо NULL
+                cursor.execute("ALTER TABLE tracked_positions ADD COLUMN last_updated TIMESTAMP")
+                # Оновлюємо існуючі записи поточним часом
+                cursor.execute("UPDATE tracked_positions SET last_updated = CURRENT_TIMESTAMP WHERE last_updated IS NULL")
                 logger.info("Added last_updated column to tracked_positions table")
 
             logger.info("Database initialized successfully")
