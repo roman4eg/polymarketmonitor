@@ -5,11 +5,34 @@ import asyncio
 import logging
 from typing import Dict, List, Optional
 from telegram.ext import Application
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.api.polymarket import PolymarketAPI, format_position
 from src.utils.database import Database
 
 logger = logging.getLogger(__name__)
+
+
+def create_progress_bar(percentage: float, length: int = 10) -> str:
+    """
+    Створити візуальний прогрес бар
+
+    Args:
+        percentage: Відсоток (0-100)
+        length: Довжина бару
+
+    Returns:
+        Текстовий прогрес бар
+    """
+    filled = int((percentage / 100) * length)
+    empty = length - filled
+
+    if percentage >= 50:
+        bar = "🟩" * filled + "⬜" * empty
+    else:
+        bar = "🟥" * filled + "⬜" * empty
+
+    return bar
 
 
 class PositionMonitor:
@@ -162,55 +185,87 @@ class PositionMonitor:
             # Отримуємо ім'я гаманця
             wallet_name = self.db.get_wallet_name(chat_id, wallet_address)
 
-            # Формуємо повідомлення
-            message = f"🔔 <b>Нова ставка!</b>\n\n"
+            for position in positions[:5]:  # Обмежуємо 5 позиціями
+                # Формуємо повідомлення
+                message = f"🎯 <b>Нова ставка!</b>\n\n"
 
-            # Додаємо посилання на профіль
-            if wallet_name:
-                profile_link = f"https://polymarket.com/profile/{wallet_address}"
-                message += f"Гаманець: <a href='{profile_link}'>{wallet_name}</a>\n"
-            else:
-                message += f"Гаманець: <code>{wallet_address[:10]}...{wallet_address[-8:]}</code>\n"
+                # Додаємо посилання на профіль
+                if wallet_name:
+                    profile_link = f"https://polymarket.com/profile/{wallet_address}"
+                    message += f"👤 Гаманець: <a href='{profile_link}'>{wallet_name}</a>\n\n"
+                else:
+                    message += f"👤 Гаманець: <code>{wallet_address[:10]}...{wallet_address[-8:]}</code>\n\n"
 
-            message += f"Нових позицій: {len(positions)}\n\n"
-            message += "─" * 30 + "\n\n"
-
-            for idx, position in enumerate(positions[:5], 1):  # Обмежуємо 5 позиціями
                 # Додаємо посилання на подію
                 slug = position.get('slug', '')
                 event_slug = position.get('eventSlug', '')
                 title = position.get('title', 'Невідома подія')
 
+                market_link = None
                 if slug and event_slug:
                     market_link = f"https://polymarket.com/event/{event_slug}/{slug}"
-                    message += f"<b>{idx}.</b> <a href='{market_link}'>{title}</a>\n"
+                    message += f"📋 <a href='{market_link}'>{title}</a>\n\n"
                 elif slug:
                     market_link = f"https://polymarket.com/event/{slug}"
-                    message += f"<b>{idx}.</b> <a href='{market_link}'>{title}</a>\n"
+                    message += f"📋 <a href='{market_link}'>{title}</a>\n\n"
                 else:
-                    message += f"<b>{idx}.</b> {title}\n"
+                    message += f"📋 {title}\n\n"
 
                 # Додаємо деталі позиції
                 outcome = position.get('outcome', 'Unknown')
                 size = float(position.get('size', 0))
                 avg_price = float(position.get('avgPrice', 0))
+                cur_price = float(position.get('curPrice', avg_price))
                 initial_value = float(position.get('initialValue', 0))
 
-                message += f"├ Позиція: <b>{outcome}</b>\n"
-                message += f"├ Розмір: {size:.2f} токенів\n"
-                message += f"├ Ціна входу: ${avg_price:.4f}\n"
-                message += f"└ Вартість: ${initial_value:.2f}\n\n"
+                # Розраховуємо поточну вартість і прибуток
+                current_value = size * cur_price
+                profit = current_value - initial_value
+                profit_percent = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
 
-            if len(positions) > 5:
-                message += f"... та ще {len(positions) - 5} позицій\n"
+                message += f"💎 Позиція: <b>{outcome}</b>\n"
+                message += f"💰 Розмір: <b>${current_value:.2f}</b> ({size:.0f} токенів)\n"
+                message += f"💵 Ціна входу: ${avg_price:.4f}\n"
+                message += f"📈 Поточна ціна: ${cur_price:.4f}"
 
-            # Надсилаємо повідомлення
-            await self.application.bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode="HTML",
-                disable_web_page_preview=True
-            )
+                # Додаємо прибуток/збиток
+                if abs(profit_percent) > 0.1:
+                    profit_emoji = "🟢" if profit > 0 else "🔴"
+                    message += f" ({profit_percent:+.1f}%) {profit_emoji}\n"
+                else:
+                    message += f" (0%) ➡️\n"
+
+                message += f"💎 Потенційний профіт: ${size - initial_value:.2f}\n\n"
+
+                # Додаємо прогрес бар (якщо є дані про YES/NO)
+                # Використовуємо поточну ціну як ймовірність YES
+                yes_prob = cur_price * 100
+                no_prob = 100 - yes_prob
+                yes_bar = create_progress_bar(yes_prob, 10)
+                no_bar = create_progress_bar(no_prob, 10)
+
+                message += f"📊 <b>Ймовірність:</b>\n"
+                message += f"YES {yes_bar} {yes_prob:.0f}%\n"
+                message += f"NO  {no_bar} {no_prob:.0f}%"
+
+                # Створюємо inline кнопки
+                keyboard = []
+                if market_link:
+                    keyboard.append([InlineKeyboardButton("🔗 Відкрити на Polymarket", url=market_link)])
+
+                profile_url = f"https://polymarket.com/profile/{wallet_address}"
+                keyboard.append([InlineKeyboardButton("👤 Профіль гаманця", url=profile_url)])
+
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                # Надсилаємо повідомлення
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=reply_markup
+                )
 
             logger.info(f"Notification sent to {chat_id} for {wallet_address}: {len(positions)} new positions")
 
@@ -239,52 +294,82 @@ class PositionMonitor:
 
                 if change_type == 'decrease':
                     emoji = "📉"
-                    action = "Продаж/Merge"
+                    action = "Продаж/Merge позиції"
                     change_amount = old_size - new_size
                 else:
                     emoji = "📈"
-                    action = "Додавання"
+                    action = "Додавання позиції"
                     change_amount = new_size - old_size
 
-                message = f"{emoji} <b>{action} позиції!</b>\n\n"
+                message = f"{emoji} <b>{action}!</b>\n\n"
 
                 # Додаємо посилання на профіль
                 if wallet_name:
                     profile_link = f"https://polymarket.com/profile/{wallet_address}"
-                    message += f"Гаманець: <a href='{profile_link}'>{wallet_name}</a>\n\n"
+                    message += f"👤 Гаманець: <a href='{profile_link}'>{wallet_name}</a>\n\n"
                 else:
-                    message += f"Гаманець: <code>{wallet_address[:10]}...{wallet_address[-8:]}</code>\n\n"
+                    message += f"👤 Гаманець: <code>{wallet_address[:10]}...{wallet_address[-8:]}</code>\n\n"
 
                 # Додаємо посилання на подію
                 slug = position.get('slug', '')
                 event_slug = position.get('eventSlug', '')
                 title = position.get('title', 'Невідома подія')
 
+                market_link = None
                 if slug and event_slug:
                     market_link = f"https://polymarket.com/event/{event_slug}/{slug}"
-                    message += f"<a href='{market_link}'>{title}</a>\n\n"
+                    message += f"📋 <a href='{market_link}'>{title}</a>\n\n"
                 elif slug:
                     market_link = f"https://polymarket.com/event/{slug}"
-                    message += f"<a href='{market_link}'>{title}</a>\n\n"
+                    message += f"📋 <a href='{market_link}'>{title}</a>\n\n"
                 else:
-                    message += f"{title}\n\n"
+                    message += f"📋 {title}\n\n"
 
                 # Додаємо деталі зміни
                 outcome = position.get('outcome', 'Unknown')
                 cur_price = float(position.get('curPrice', 0))
 
-                message += f"Позиція: <b>{outcome}</b>\n"
-                message += f"Було: {old_size:.2f} токенів\n"
-                message += f"Стало: {new_size:.2f} токенів\n"
-                message += f"Зміна: {'+' if change_type == 'increase' else '-'}{change_amount:.2f} токенів\n"
-                message += f"Поточна ціна: ${cur_price:.4f}"
+                # Розраховуємо вартість
+                old_value = old_size * cur_price
+                new_value = new_size * cur_price
+                value_change = new_value - old_value
+
+                message += f"💎 Позиція: <b>{outcome}</b>\n"
+                message += f"📊 Було: {old_size:.0f} токенів (${old_value:.2f})\n"
+                message += f"📊 Стало: {new_size:.0f} токенів (${new_value:.2f})\n"
+
+                # Додаємо зміну з кольоровим індикатором
+                change_emoji = "🟢" if change_type == 'increase' else "🔴"
+                message += f"📈 Зміна: {'+' if change_type == 'increase' else ''}{change_amount:.0f} токенів (${value_change:+.2f}) {change_emoji}\n"
+                message += f"💵 Поточна ціна: ${cur_price:.4f}\n\n"
+
+                # Додаємо прогрес бар
+                yes_prob = cur_price * 100
+                no_prob = 100 - yes_prob
+                yes_bar = create_progress_bar(yes_prob, 10)
+                no_bar = create_progress_bar(no_prob, 10)
+
+                message += f"📊 <b>Ймовірність:</b>\n"
+                message += f"YES {yes_bar} {yes_prob:.0f}%\n"
+                message += f"NO  {no_bar} {no_prob:.0f}%"
+
+                # Створюємо inline кнопки
+                keyboard = []
+                if market_link:
+                    keyboard.append([InlineKeyboardButton("🔗 Відкрити на Polymarket", url=market_link)])
+
+                profile_url = f"https://polymarket.com/profile/{wallet_address}"
+                keyboard.append([InlineKeyboardButton("👤 Профіль гаманця", url=profile_url)])
+
+                reply_markup = InlineKeyboardMarkup(keyboard)
 
                 # Надсилаємо повідомлення
                 await self.application.bot.send_message(
                     chat_id=chat_id,
                     text=message,
                     parse_mode="HTML",
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    reply_markup=reply_markup
                 )
 
             logger.info(f"Size change notification sent to {chat_id} for {wallet_address}: {len(size_changes)} changes")
