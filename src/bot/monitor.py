@@ -3,7 +3,9 @@
 """
 import asyncio
 import logging
-from typing import Dict, List, Optional
+import logging.handlers
+import os
+from typing import Dict, List, Optional, Set
 from telegram.ext import Application
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -11,6 +13,35 @@ from src.api.polymarket import PolymarketAPI, format_position
 from src.utils.database import Database
 
 logger = logging.getLogger(__name__)
+
+# Налаштування окремого debug-логера у файл
+def setup_debug_logger() -> logging.Logger:
+    debug_logger = logging.getLogger("polymarket.debug")
+    debug_logger.setLevel(logging.DEBUG)
+
+    if not debug_logger.handlers:
+        log_dir = "logs"
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Rotating file handler: макс 5 МБ, 3 файли
+        file_handler = logging.handlers.RotatingFileHandler(
+            os.path.join(log_dir, "debug.log"),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8"
+        )
+        file_handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        file_handler.setFormatter(formatter)
+        debug_logger.addHandler(file_handler)
+        debug_logger.propagate = False
+
+    return debug_logger
+
+debug_log = setup_debug_logger()
 
 
 def create_progress_bar(percentage: float, length: int = 10) -> str:
@@ -117,59 +148,145 @@ class PositionMonitor:
 
         for wallet_address in wallet_addresses:
             try:
+                debug_log.debug(f"=== Checking wallet {wallet_address} (chat_id={chat_id}) ===")
+
                 positions = await api.get_positions(wallet_address)
 
-                if not positions:
-                    continue
+                # Позиції з БД (відстежувані)
+                db_positions = self.db.get_wallet_tracked_positions(wallet_address)
+                db_asset_ids: Set[str] = {p["asset_id"] for p in db_positions}
 
-                # Перевіряємо кожну позицію
+                debug_log.debug(f"API returned {len(positions) if positions else 0} positions")
+                debug_log.debug(f"DB has {len(db_asset_ids)} tracked positions: {db_asset_ids}")
+
                 new_positions = []
-                size_changes = []  # Зміни розміру (продаж/merge)
+                size_changes = []
 
-                for position in positions:
-                    # Data API повертає поле 'asset' для ID активу
-                    asset_id = position.get('asset', '')
-                    if not asset_id:
-                        # Якщо немає asset, спробуємо conditionId як fallback
-                        asset_id = position.get('conditionId', '')
-                    if not asset_id:
-                        continue
+                if positions:
+                    # ID активів, які є в API зараз
+                    api_asset_ids: Set[str] = set()
 
-                    current_size = float(position.get('size', 0))
-                    avg_price = float(position.get('avgPrice', 0))
+                    for position in positions:
+                        asset_id = position.get('asset', '') or position.get('conditionId', '')
+                        if not asset_id:
+                            debug_log.debug(f"  Skipping position without asset_id: {position.get('title', '?')}")
+                            continue
 
-                    # Перевіряємо чи це нова позиція
-                    if not self.db.is_position_tracked(wallet_address, asset_id):
-                        # Перевіряємо фільтр по ціні для нових позицій
-                        if avg_price <= max_entry_price:
-                            # Додаємо позицію до відстежуваних
-                            condition_id = position.get('conditionId', '')
-                            self.db.add_tracked_position(wallet_address, asset_id, condition_id, current_size)
-                            new_positions.append(position)
-                    else:
-                        # Перевіряємо зміни розміру існуючої позиції
-                        old_size = self.db.get_position_size(wallet_address, asset_id)
-                        if old_size is not None and abs(current_size - old_size) > 0.01:  # Якщо зміна більше 0.01
-                            size_change_info = {
-                                'position': position,
-                                'old_size': old_size,
-                                'new_size': current_size,
-                                'change_type': 'increase' if current_size > old_size else 'decrease'
-                            }
-                            size_changes.append(size_change_info)
-                            # Оновлюємо розмір
-                            self.db.update_position_size(wallet_address, asset_id, current_size)
+                        api_asset_ids.add(asset_id)
+                        current_size = float(position.get('size', 0))
+                        avg_price = float(position.get('avgPrice', 0))
+                        title = position.get('title', '?')
 
-                # Надсилаємо сповіщення про нові позиції
+                        debug_log.debug(
+                            f"  Position: {title[:50]} | asset={asset_id[:16]}... | "
+                            f"size={current_size:.2f} | avg_price={avg_price:.4f}"
+                        )
+
+                        if asset_id not in db_asset_ids:
+                            # Нова позиція
+                            debug_log.debug(f"    → NEW position (not in DB)")
+                            if avg_price <= max_entry_price:
+                                condition_id = position.get('conditionId', '')
+                                added = self.db.add_tracked_position(wallet_address, asset_id, condition_id, current_size)
+                                debug_log.debug(f"    → Added to DB: {added}")
+                                new_positions.append(position)
+                            else:
+                                debug_log.debug(
+                                    f"    → Filtered out: avg_price={avg_price:.4f} > max_entry_price={max_entry_price:.4f}"
+                                )
+                        else:
+                            # Існуюча позиція — перевіряємо зміну розміру
+                            old_size = self.db.get_position_size(wallet_address, asset_id)
+                            debug_log.debug(
+                                f"    → EXISTING | old_size={old_size} | current_size={current_size:.2f} | "
+                                f"diff={abs(current_size - (old_size or 0)):.4f}"
+                            )
+
+                            if old_size is not None and abs(current_size - old_size) > 0.01:
+                                change_type = 'increase' if current_size > old_size else 'decrease'
+                                debug_log.debug(f"    → SIZE CHANGE detected: {change_type} ({old_size:.2f} → {current_size:.2f})")
+                                size_changes.append({
+                                    'position': position,
+                                    'old_size': old_size,
+                                    'new_size': current_size,
+                                    'change_type': change_type
+                                })
+                                self.db.update_position_size(wallet_address, asset_id, current_size)
+                            else:
+                                debug_log.debug(f"    → No significant change")
+
+                    # Перевіряємо повністю продані позиції (є в БД, але відсутні в API)
+                    fully_closed = db_asset_ids - api_asset_ids
+                    debug_log.debug(f"Fully closed positions (in DB but not in API): {fully_closed}")
+
+                    for asset_id in fully_closed:
+                        db_pos = next((p for p in db_positions if p["asset_id"] == asset_id), None)
+                        old_size = db_pos["size"] if db_pos else 0
+                        debug_log.debug(f"  → FULL SELL: asset={asset_id[:16]}... | last known size={old_size:.2f}")
+
+                        # Будуємо мінімальну позицію для сповіщення (API вже не повертає дані)
+                        closed_position = {
+                            'asset': asset_id,
+                            'conditionId': db_pos["condition_id"] if db_pos else '',
+                            'title': 'Позиція закрита',
+                            'outcome': '—',
+                            'size': 0,
+                            'avgPrice': 0,
+                            'curPrice': 0,
+                            'slug': '',
+                            'eventSlug': '',
+                        }
+                        size_changes.append({
+                            'position': closed_position,
+                            'old_size': old_size,
+                            'new_size': 0,
+                            'change_type': 'decrease',
+                            'fully_closed': True
+                        })
+                        self.db.remove_tracked_position(wallet_address, asset_id)
+                        debug_log.debug(f"  → Removed from DB")
+
+                else:
+                    # API повернув пусто — можливо всі позиції закриті
+                    debug_log.debug(f"API returned empty — checking for fully closed positions")
+                    for db_pos in db_positions:
+                        asset_id = db_pos["asset_id"]
+                        old_size = db_pos["size"]
+                        debug_log.debug(f"  → FULL SELL (empty API): asset={asset_id[:16]}... | size={old_size:.2f}")
+                        closed_position = {
+                            'asset': asset_id,
+                            'conditionId': db_pos["condition_id"] or '',
+                            'title': 'Позиція закрита',
+                            'outcome': '—',
+                            'size': 0,
+                            'avgPrice': 0,
+                            'curPrice': 0,
+                            'slug': '',
+                            'eventSlug': '',
+                        }
+                        size_changes.append({
+                            'position': closed_position,
+                            'old_size': old_size,
+                            'new_size': 0,
+                            'change_type': 'decrease',
+                            'fully_closed': True
+                        })
+                        self.db.remove_tracked_position(wallet_address, asset_id)
+
+                debug_log.debug(
+                    f"Summary: {len(new_positions)} new, {len(size_changes)} changes "
+                    f"(for wallet {wallet_address})"
+                )
+
                 if new_positions:
                     await self._send_notification(chat_id, wallet_address, new_positions, "new")
 
-                # Надсилаємо сповіщення про зміни розміру
                 if size_changes:
                     await self._send_size_change_notification(chat_id, wallet_address, size_changes)
 
             except Exception as e:
-                logger.error(f"Error checking wallet {wallet_address}: {e}")
+                logger.error(f"Error checking wallet {wallet_address}: {e}", exc_info=True)
+                debug_log.error(f"Exception for wallet {wallet_address}: {e}", exc_info=True)
 
     async def _send_notification(self, chat_id: int, wallet_address: str, positions: List[Dict], notification_type: str = "new"):
         """
@@ -292,9 +409,15 @@ class PositionMonitor:
                 new_size = change_info['new_size']
                 position = change_info['position']
 
+                fully_closed = change_info.get('fully_closed', False)
+
                 if change_type == 'decrease':
-                    emoji = "📉"
-                    action = "Продаж/Merge позиції"
+                    if fully_closed:
+                        emoji = "🔴"
+                        action = "Позицію повністю продано"
+                    else:
+                        emoji = "📉"
+                        action = "Продаж/Merge позиції"
                     change_amount = old_size - new_size
                 else:
                     emoji = "📈"
@@ -326,32 +449,38 @@ class PositionMonitor:
                     message += f"📋 {title}\n\n"
 
                 # Додаємо деталі зміни
-                outcome = position.get('outcome', 'Unknown')
+                outcome = position.get('outcome', '—')
                 cur_price = float(position.get('curPrice', 0))
 
-                # Розраховуємо вартість
-                old_value = old_size * cur_price
-                new_value = new_size * cur_price
-                value_change = new_value - old_value
-
                 message += f"💎 Позиція: <b>{outcome}</b>\n"
-                message += f"📊 Було: {old_size:.0f} токенів (${old_value:.2f})\n"
-                message += f"📊 Стало: {new_size:.0f} токенів (${new_value:.2f})\n"
 
-                # Додаємо зміну з кольоровим індикатором
-                change_emoji = "🟢" if change_type == 'increase' else "🔴"
-                message += f"📈 Зміна: {'+' if change_type == 'increase' else ''}{change_amount:.0f} токенів (${value_change:+.2f}) {change_emoji}\n"
-                message += f"💵 Поточна ціна: ${cur_price:.4f}\n\n"
+                if fully_closed:
+                    # Повне закриття — ціни API вже немає
+                    message += f"📊 Було: {old_size:.0f} токенів\n"
+                    message += f"📊 Стало: 0 токенів (повністю продано) 🔴\n"
+                    message += f"📈 Зміна: -{change_amount:.0f} токенів\n"
+                else:
+                    # Часткова зміна — є актуальна ціна
+                    old_value = old_size * cur_price
+                    new_value = new_size * cur_price
+                    value_change = new_value - old_value
 
-                # Додаємо прогрес бар
-                yes_prob = cur_price * 100
-                no_prob = 100 - yes_prob
-                yes_bar = create_progress_bar(yes_prob, 10)
-                no_bar = create_progress_bar(no_prob, 10)
+                    message += f"📊 Було: {old_size:.0f} токенів (${old_value:.2f})\n"
+                    message += f"📊 Стало: {new_size:.0f} токенів (${new_value:.2f})\n"
 
-                message += f"📊 <b>Ймовірність:</b>\n"
-                message += f"YES {yes_bar} {yes_prob:.0f}%\n"
-                message += f"NO  {no_bar} {no_prob:.0f}%"
+                    change_emoji = "🟢" if change_type == 'increase' else "🔴"
+                    message += f"📈 Зміна: {'+' if change_type == 'increase' else ''}{change_amount:.0f} токенів (${value_change:+.2f}) {change_emoji}\n"
+                    message += f"💵 Поточна ціна: ${cur_price:.4f}\n\n"
+
+                    # Прогрес бар тільки якщо є реальна ціна
+                    yes_prob = cur_price * 100
+                    no_prob = 100 - yes_prob
+                    yes_bar = create_progress_bar(yes_prob, 10)
+                    no_bar = create_progress_bar(no_prob, 10)
+
+                    message += f"📊 <b>Ймовірність:</b>\n"
+                    message += f"YES {yes_bar} {yes_prob:.0f}%\n"
+                    message += f"NO  {no_bar} {no_prob:.0f}%"
 
                 # Створюємо inline кнопки
                 keyboard = []
@@ -372,7 +501,11 @@ class PositionMonitor:
                     reply_markup=reply_markup
                 )
 
+            debug_log.debug(
+                f"Size change notifications sent: {len(size_changes)} for wallet {wallet_address}"
+            )
             logger.info(f"Size change notification sent to {chat_id} for {wallet_address}: {len(size_changes)} changes")
 
         except Exception as e:
             logger.error(f"Error sending size change notification to {chat_id}: {e}")
+            debug_log.error(f"Error in _send_size_change_notification: {e}", exc_info=True)

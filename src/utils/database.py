@@ -366,6 +366,51 @@ class Database:
             logger.error(f"Error getting watchlist with names: {e}")
             return []
 
+    def get_wallet_tracked_positions(self, wallet_address: str) -> List[Dict]:
+        """
+        Отримати всі відстежувані позиції гаманця з БД
+
+        Args:
+            wallet_address: Адреса гаманця
+
+        Returns:
+            Список позицій зі словниками {asset_id, condition_id, size}
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT asset_id, condition_id, size FROM tracked_positions WHERE wallet_address = ?",
+                    (wallet_address.lower(),)
+                )
+                return [{"asset_id": row["asset_id"], "condition_id": row["condition_id"], "size": row["size"]} for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting wallet tracked positions: {e}")
+            return []
+
+    def remove_tracked_position(self, wallet_address: str, asset_id: str) -> bool:
+        """
+        Видалити позицію зі списку відстежуваних (повний продаж)
+
+        Args:
+            wallet_address: Адреса гаманця
+            asset_id: ID активу
+
+        Returns:
+            True якщо видалено успішно
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM tracked_positions WHERE wallet_address = ? AND asset_id = ?",
+                    (wallet_address.lower(), asset_id)
+                )
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error removing tracked position: {e}")
+            return False
+
     def get_position_size(self, wallet_address: str, asset_id: str) -> Optional[float]:
         """
         Отримати розмір позиції
