@@ -28,32 +28,48 @@ class PolymarketAPI:
 
     async def get_positions(self, wallet_address: str) -> List[Dict]:
         """
-        Отримати активні позиції (ставки) для гаманця
+        Отримати всі активні позиції (ставки) для гаманця з пагінацією
 
         Args:
             wallet_address: Адреса гаманця Ethereum
 
         Returns:
-            Список позицій користувача
+            Повний список позицій користувача (всі сторінки)
         """
-        try:
-            url = f"{self.DATA_API_URL}/positions"
-            params = {
-                "user": wallet_address.lower(),
-                "sizeThreshold": "0.01",  # Мінімальний розмір позиції
-                "limit": "100"  # Максимум 100 позицій
-            }
+        PAGE_SIZE = 100
+        all_positions = []
+        offset = 0
 
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
+        try:
+            while True:
+                url = f"{self.DATA_API_URL}/positions"
+                params = {
+                    "user": wallet_address.lower(),
+                    "sizeThreshold": "0.01",
+                    "limit": str(PAGE_SIZE),
+                    "offset": str(offset)
+                }
+
+                async with self.session.get(url, params=params) as response:
+                    if response.status != 200:
+                        text = await response.text()
+                        logger.error(f"Error fetching positions (offset={offset}): {response.status} — {text}")
+                        break
+
                     data = await response.json()
-                    return data if isinstance(data, list) else []
-                else:
-                    logger.error(f"Error fetching positions: {response.status}")
-                    # Логуємо повний текст помилки
-                    text = await response.text()
-                    logger.error(f"Response text: {text}")
-                    return []
+                    page = data if isinstance(data, list) else []
+                    all_positions.extend(page)
+
+                    logger.debug(f"Fetched {len(page)} positions (offset={offset}), total so far: {len(all_positions)}")
+
+                    # Якщо прийшло менше ніж PAGE_SIZE — більше немає
+                    if len(page) < PAGE_SIZE:
+                        break
+
+                    offset += PAGE_SIZE
+
+            return all_positions
+
         except Exception as e:
             logger.error(f"Exception in get_positions: {e}")
             return []

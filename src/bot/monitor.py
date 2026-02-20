@@ -156,8 +156,9 @@ class PositionMonitor:
                 db_positions = self.db.get_wallet_tracked_positions(wallet_address)
                 db_asset_ids: Set[str] = {p["asset_id"] for p in db_positions}
 
-                debug_log.debug(f"API returned {len(positions) if positions else 0} positions")
-                debug_log.debug(f"DB has {len(db_asset_ids)} tracked positions: {db_asset_ids}")
+                total_api = len(positions) if positions else 0
+                debug_log.debug(f"API returned {total_api} positions (all pages fetched)")
+                debug_log.debug(f"DB has {len(db_asset_ids)} tracked positions")
 
                 new_positions = []
                 size_changes = []
