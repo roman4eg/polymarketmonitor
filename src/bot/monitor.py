@@ -185,10 +185,28 @@ class PositionMonitor:
 
                         if asset_id not in db_asset_ids:
                             # Нова позиція
-                            debug_log.debug(f"    → NEW position (not in DB)")
+                            cur_price_new = float(position.get('curPrice', avg_price))
+                            debug_log.debug(f"    → NEW position (not in DB) | curPrice={cur_price_new:.4f}")
+
+                            # Пропускаємо resolved ринки (curPrice = 0 означає завершений ринок)
+                            if cur_price_new == 0:
+                                debug_log.debug(f"    → Skipped: resolved market (curPrice=0)")
+                                # Все одно додаємо до DB щоб не показувати знову
+                                self.db.add_tracked_position(
+                                    wallet_address, asset_id,
+                                    position.get('conditionId', ''), current_size,
+                                    title=position.get('title'), outcome=position.get('outcome'),
+                                    slug=position.get('slug'), event_slug=position.get('eventSlug')
+                                )
+                                continue
+
                             if avg_price <= max_entry_price:
                                 condition_id = position.get('conditionId', '')
-                                added = self.db.add_tracked_position(wallet_address, asset_id, condition_id, current_size)
+                                added = self.db.add_tracked_position(
+                                    wallet_address, asset_id, condition_id, current_size,
+                                    title=position.get('title'), outcome=position.get('outcome'),
+                                    slug=position.get('slug'), event_slug=position.get('eventSlug')
+                                )
                                 debug_log.debug(f"    → Added to DB: {added}")
                                 new_positions.append(position)
                             else:
@@ -225,17 +243,17 @@ class PositionMonitor:
                         old_size = db_pos["size"] if db_pos else 0
                         debug_log.debug(f"  → FULL SELL: asset={asset_id[:16]}... | last known size={old_size:.2f}")
 
-                        # Будуємо мінімальну позицію для сповіщення (API вже не повертає дані)
+                        # Будуємо позицію для сповіщення з metadata зі збереженої в DB
                         closed_position = {
                             'asset': asset_id,
                             'conditionId': db_pos["condition_id"] if db_pos else '',
-                            'title': 'Позиція закрита',
-                            'outcome': '—',
+                            'title': (db_pos["title"] if db_pos and db_pos["title"] else 'Невідома позиція'),
+                            'outcome': (db_pos["outcome"] if db_pos and db_pos["outcome"] else '—'),
                             'size': 0,
                             'avgPrice': 0,
                             'curPrice': 0,
-                            'slug': '',
-                            'eventSlug': '',
+                            'slug': (db_pos["slug"] if db_pos and db_pos["slug"] else ''),
+                            'eventSlug': (db_pos["event_slug"] if db_pos and db_pos["event_slug"] else ''),
                         }
                         size_changes.append({
                             'position': closed_position,
@@ -257,13 +275,13 @@ class PositionMonitor:
                         closed_position = {
                             'asset': asset_id,
                             'conditionId': db_pos["condition_id"] or '',
-                            'title': 'Позиція закрита',
-                            'outcome': '—',
+                            'title': (db_pos["title"] if db_pos["title"] else 'Невідома позиція'),
+                            'outcome': (db_pos["outcome"] if db_pos["outcome"] else '—'),
                             'size': 0,
                             'avgPrice': 0,
                             'curPrice': 0,
-                            'slug': '',
-                            'eventSlug': '',
+                            'slug': (db_pos["slug"] or ''),
+                            'eventSlug': (db_pos["event_slug"] or ''),
                         }
                         size_changes.append({
                             'position': closed_position,

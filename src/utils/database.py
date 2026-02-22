@@ -83,24 +83,30 @@ class Database:
                     asset_id TEXT NOT NULL,
                     condition_id TEXT,
                     size REAL DEFAULT 0,
+                    title TEXT,
+                    outcome TEXT,
+                    slug TEXT,
+                    event_slug TEXT,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(wallet_address, asset_id)
                 )
             """)
 
-            # Перевірка чи існують колонки size та last_updated
+            # Перевірка чи існують всі необхідні колонки
             cursor.execute("PRAGMA table_info(tracked_positions)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'size' not in columns:
                 cursor.execute("ALTER TABLE tracked_positions ADD COLUMN size REAL DEFAULT 0")
                 logger.info("Added size column to tracked_positions table")
             if 'last_updated' not in columns:
-                # SQLite не підтримує CURRENT_TIMESTAMP в ALTER TABLE, використовуємо NULL
                 cursor.execute("ALTER TABLE tracked_positions ADD COLUMN last_updated TIMESTAMP")
-                # Оновлюємо існуючі записи поточним часом
                 cursor.execute("UPDATE tracked_positions SET last_updated = CURRENT_TIMESTAMP WHERE last_updated IS NULL")
                 logger.info("Added last_updated column to tracked_positions table")
+            for col in ('title', 'outcome', 'slug', 'event_slug'):
+                if col not in columns:
+                    cursor.execute(f"ALTER TABLE tracked_positions ADD COLUMN {col} TEXT")
+                    logger.info(f"Added {col} column to tracked_positions table")
 
             logger.info("Database initialized successfully")
 
@@ -295,7 +301,17 @@ class Database:
             logger.error(f"Error checking tracked position: {e}")
             return False
 
-    def add_tracked_position(self, wallet_address: str, asset_id: str, condition_id: Optional[str] = None, size: float = 0) -> bool:
+    def add_tracked_position(
+        self,
+        wallet_address: str,
+        asset_id: str,
+        condition_id: Optional[str] = None,
+        size: float = 0,
+        title: Optional[str] = None,
+        outcome: Optional[str] = None,
+        slug: Optional[str] = None,
+        event_slug: Optional[str] = None,
+    ) -> bool:
         """
         Додати позицію до відстежуваних
 
@@ -304,6 +320,10 @@ class Database:
             asset_id: ID активу
             condition_id: ID умови (опціонально)
             size: Розмір позиції
+            title: Назва ринку
+            outcome: Позиція (YES/NO/назва команди)
+            slug: Slug ринку
+            event_slug: Slug події
 
         Returns:
             True якщо позиція додана успішно
@@ -312,8 +332,10 @@ class Database:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT OR IGNORE INTO tracked_positions (wallet_address, asset_id, condition_id, size, last_updated) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (wallet_address.lower(), asset_id, condition_id, size)
+                    """INSERT OR IGNORE INTO tracked_positions
+                       (wallet_address, asset_id, condition_id, size, title, outcome, slug, event_slug, last_updated)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    (wallet_address.lower(), asset_id, condition_id, size, title, outcome, slug, event_slug)
                 )
                 return cursor.rowcount > 0
         except Exception as e:
@@ -380,10 +402,21 @@ class Database:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT asset_id, condition_id, size FROM tracked_positions WHERE wallet_address = ?",
+                    "SELECT asset_id, condition_id, size, title, outcome, slug, event_slug FROM tracked_positions WHERE wallet_address = ?",
                     (wallet_address.lower(),)
                 )
-                return [{"asset_id": row["asset_id"], "condition_id": row["condition_id"], "size": row["size"]} for row in cursor.fetchall()]
+                return [
+                    {
+                        "asset_id": row["asset_id"],
+                        "condition_id": row["condition_id"],
+                        "size": row["size"],
+                        "title": row["title"],
+                        "outcome": row["outcome"],
+                        "slug": row["slug"],
+                        "event_slug": row["event_slug"],
+                    }
+                    for row in cursor.fetchall()
+                ]
         except Exception as e:
             logger.error(f"Error getting wallet tracked positions: {e}")
             return []
