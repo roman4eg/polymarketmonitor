@@ -468,6 +468,31 @@ class Database:
             logger.error(f"Error getting position size: {e}")
             return None
 
+    def update_position_metadata(
+        self,
+        wallet_address: str,
+        asset_id: str,
+        title: Optional[str],
+        outcome: Optional[str],
+        slug: Optional[str],
+        event_slug: Optional[str],
+    ) -> None:
+        """Оновити metadata позиції (title, outcome, slug) якщо вони відсутні"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """UPDATE tracked_positions
+                       SET title = COALESCE(title, ?),
+                           outcome = COALESCE(outcome, ?),
+                           slug = COALESCE(slug, ?),
+                           event_slug = COALESCE(event_slug, ?)
+                       WHERE wallet_address = ? AND asset_id = ?""",
+                    (title, outcome, slug, event_slug, wallet_address.lower(), asset_id)
+                )
+        except Exception as e:
+            logger.error(f"Error updating position metadata: {e}")
+
     def update_position_size(self, wallet_address: str, asset_id: str, new_size: float) -> bool:
         """
         Оновити розмір позиції

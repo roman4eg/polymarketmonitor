@@ -214,7 +214,16 @@ class PositionMonitor:
                                     f"    → Filtered out: avg_price={avg_price:.4f} > max_entry_price={max_entry_price:.4f}"
                                 )
                         else:
-                            # Існуюча позиція — перевіряємо зміну розміру
+                            # Існуюча позиція — оновлюємо metadata якщо вона відсутня в DB
+                            self.db.update_position_metadata(
+                                wallet_address, asset_id,
+                                title=position.get('title'),
+                                outcome=position.get('outcome'),
+                                slug=position.get('slug'),
+                                event_slug=position.get('eventSlug'),
+                            )
+
+                            # Перевіряємо зміну розміру
                             old_size = self.db.get_position_size(wallet_address, asset_id)
                             debug_log.debug(
                                 f"    → EXISTING | old_size={old_size} | current_size={current_size:.2f} | "
